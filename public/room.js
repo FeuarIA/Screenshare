@@ -1,6 +1,6 @@
 'use strict';
 
-// ─── Paramètres URL ───────────────────────────────────────────────────────────
+// ─── Params URL ───────────────────────────────────────────────────────────────
 const params   = new URLSearchParams(window.location.search);
 const ROOM_ID  = params.get('room');
 const USERNAME = params.get('username');
@@ -15,32 +15,31 @@ const ICE_CONFIG = {
   ],
 };
 
-// Contraintes + débit max par qualité
 const QUALITY = {
   '720p':  { width: { ideal: 1280 }, height: { ideal: 720  }, frameRate: { ideal: 30 }, bitrate: 4_000_000  },
   '1080p': { width: { ideal: 1920 }, height: { ideal: 1080 }, frameRate: { ideal: 30 }, bitrate: 8_000_000  },
   '1440p': { width: { ideal: 2560 }, height: { ideal: 1440 }, frameRate: { ideal: 30 }, bitrate: 15_000_000 },
 };
 
-// ─── État ─────────────────────────────────────────────────────────────────────
+// ─── État global ──────────────────────────────────────────────────────────────
 const socket = io();
-let localStream = null;
-let isSharing   = false;
+let localStream  = null;
+let isSharing    = false;
+let focusedPeerId = null;  // ID du peer dont le stream est en focus
 
-// peers[socketId] = { pc: RTCPeerConnection, username: string }
-const peers = {};
-
-// Candidats ICE reçus avant que la remote description soit définie
+// peers[socketId]    = { pc: RTCPeerConnection, username }
+// usersMap[socketId] = { username, isHost, isSharing }
+const peers      = {};
+const usersMap   = {};
 const pendingIce = {};
-
-// Usernames reçus via user-joined avant que l'offre arrive
 const knownUsernames = {};
 
 // ─── Éléments UI ─────────────────────────────────────────────────────────────
-const grid         = document.getElementById('video-grid');
-const noStreamMsg  = document.getElementById('no-stream-msg');
-const shareBtn     = document.getElementById('share-btn');
-const qualitySelect = document.getElementById('quality-select');
+const grid        = document.getElementById('video-grid');
+const shareBtn    = document.getElementById('share-btn');
+const qualitySel  = document.getElementById('quality-select');
+const chatInput   = document.getElementById('chat-input');
+const chatMessages = document.getElementById('chat-messages');
 
 document.getElementById('room-code-display').textContent = ROOM_ID;
 
@@ -58,30 +57,151 @@ document.getElementById('leave-btn').addEventListener('click', () => {
 
 shareBtn.addEventListener('click', toggleShare);
 
-qualitySelect.addEventListener('change', async () => {
-  if (isSharing) {
-    await stopShare();
-    await startShare();
-  }
+qualitySel.addEventListener('change', async () => {
+  if (isSharing) { await stopShare(); await startShare(); }
 });
 
-// ─── Gestion des tuiles vidéo ─────────────────────────────────────────────────
+// ─── Chat ─────────────────────────────────────────────────────────────────────
+function sendChat() {
+  const text = chatInput.value.trim();
+  if (!text) return;
+  socket.emit('chat-message', { text });
+  chatInput.value = '';
+}
+
+document.getElementById('send-btn').addEventListener('click', sendChat);
+chatInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendChat(); });
+
+function appendChatMessage({ fromId, username, text, time }) {
+  const isSelf = fromId === socket.id;
+  const wrap = document.createElement('div');
+  wrap.className = `chat-msg ${isSelf ? 'chat-msg-self' : ''}`;
+
+  const heure = new Date(time).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+
+  wrap.innerHTML = `
+    <span class="chat-author">${escapeHtml(username)}</span>
+    <span class="chat-time">${heure}</span>
+    <div class="chat-text">${escapeHtml(text)}</div>
+  `;
+  chatMessages.appendChild(wrap);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function appendSystemMessage(text) {
+  const el = document.createElement('div');
+  el.className = 'chat-system';
+  el.textContent = text;
+  chatMessages.appendChild(el);
+  chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
+function escapeHtml(str) {
+  return str.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+// ─── Liste des utilisateurs ───────────────────────────────────────────────────
+function renderUserList() {
+  const list = document.getElementById('user-list');
+  list.innerHTML = '';
+
+  for (const [id, user] of Object.entries(usersMap)) {
+    const isSelf = id === socket.id;
+
+    const item = document.createElement('div');
+    item.className = 'user-item';
+
+    // Nom + badges
+    const info = document.createElement('div');
+    info.className = 'user-info';
+
+    const name = document.createElement('span');
+    name.className = 'user-name';
+    name.textContent = user.username + (isSelf ? ' (moi)' : '');
+    info.appendChild(name);
+
+    const badges = document.createElement('div');
+    badges.className = 'badges-row';
+    if (user.isHost) {
+      const b = document.createElement('span');
+      b.className = 'badge badge-host';
+      b.textContent = 'Hôte';
+      badges.appendChild(b);
+    } else {
+      const b = document.createElement('span');
+      b.className = 'badge badge-guest';
+      b.textContent = 'Invité';
+      badges.appendChild(b);
+    }
+    if (user.isSharing) {
+      const b = document.createElement('span');
+      b.className = 'badge badge-live';
+      b.textContent = '● Live';
+      badges.appendChild(b);
+    }
+    info.appendChild(badges);
+    item.appendChild(info);
+
+    // Bouton "Regarder" (uniquement pour les autres qui partagent)
+    if (!isSelf && user.isSharing) {
+      const btn = document.createElement('button');
+      const isFocused = focusedPeerId === id;
+      btn.className = `btn btn-watch ${isFocused ? 'btn-watch-active' : ''}`;
+      btn.textContent = isFocused ? 'Focalisé ✕' : 'Regarder';
+      btn.addEventListener('click', () => {
+        if (isFocused) unfocusStream();
+        else focusStream(id);
+      });
+      item.appendChild(btn);
+    }
+
+    list.appendChild(item);
+  }
+}
+
+// ─── Focus / unfocus d'un stream ──────────────────────────────────────────────
+function focusStream(peerId) {
+  focusedPeerId = peerId;
+  grid.querySelectorAll('.video-tile').forEach(tile => {
+    tile.classList.toggle('tile-hidden', tile.id !== `tile-${peerId}`);
+  });
+  grid.classList.add('grid-focus');
+  renderUserList();
+}
+
+function unfocusStream() {
+  focusedPeerId = null;
+  grid.querySelectorAll('.video-tile').forEach(tile => tile.classList.remove('tile-hidden'));
+  grid.classList.remove('grid-focus');
+  renderUserList();
+}
+
+// ─── Tuiles vidéo ─────────────────────────────────────────────────────────────
 function checkEmpty() {
-  noStreamMsg.style.display = grid.querySelectorAll('.video-tile').length === 0 ? 'flex' : 'none';
+  const count = grid.querySelectorAll('.video-tile').length;
+  document.getElementById('no-stream-msg').style.display = count === 0 ? 'flex' : 'none';
 }
 
 function addVideoTile(id, username, stream) {
   if (document.getElementById(`tile-${id}`)) return;
 
-  const tile  = document.createElement('div');
+  const tile = document.createElement('div');
   tile.className = 'video-tile';
   tile.id = `tile-${id}`;
+  // Si focus actif sur quelqu'un d'autre, cacher cette nouvelle tuile
+  if (focusedPeerId && focusedPeerId !== id) tile.classList.add('tile-hidden');
 
   const video = document.createElement('video');
   video.autoplay    = true;
   video.playsInline = true;
   video.muted       = (id === 'local');
   video.srcObject   = stream;
+  // Double-clic pour focus
+  video.addEventListener('dblclick', () => {
+    if (id === 'local') return;
+    if (focusedPeerId === id) unfocusStream();
+    else focusStream(id);
+  });
 
   const label = document.createElement('span');
   label.className   = 'video-label';
@@ -96,23 +216,21 @@ function addVideoTile(id, username, stream) {
 function removeVideoTile(id) {
   const tile = document.getElementById(`tile-${id}`);
   if (tile) { tile.remove(); checkEmpty(); }
+  if (focusedPeerId === id) unfocusStream();
 }
 
-// ─── WebRTC — création d'une connexion pair ───────────────────────────────────
+// ─── WebRTC ───────────────────────────────────────────────────────────────────
 async function createPeer(peerId, peerUsername, initiator) {
   if (peers[peerId]) return peers[peerId].pc;
 
   const pc = new RTCPeerConnection(ICE_CONFIG);
-  peers[peerId]    = { pc, username: peerUsername };
+  peers[peerId]      = { pc, username: peerUsername };
   pendingIce[peerId] = pendingIce[peerId] || [];
 
-  // Réception d'une piste vidéo distante
   pc.ontrack = ({ track, streams }) => {
     if (track.kind !== 'video') return;
     const stream = streams[0] || new MediaStream([track]);
-    // Afficher immédiatement — on ne se fie pas à unmute (peu fiable pour getDisplayMedia)
     addVideoTile(peerId, peerUsername, stream);
-    // Retirer la tuile quand la piste se termine
     track.addEventListener('ended', () => removeVideoTile(peerId));
   };
 
@@ -128,15 +246,8 @@ async function createPeer(peerId, peerUsername, initiator) {
     }
   };
 
-  // L'initiateur crée l'offre
   if (initiator) {
-    const transceiver = pc.addTransceiver('video', { direction: 'sendrecv' });
-
-    if (localStream) {
-      const vt = localStream.getVideoTracks()[0];
-      if (vt) await transceiver.sender.replaceTrack(vt);
-    }
-
+    pc.addTransceiver('video', { direction: 'sendrecv' });
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket.emit('offer', { to: peerId, offer });
@@ -145,29 +256,57 @@ async function createPeer(peerId, peerUsername, initiator) {
   return pc;
 }
 
-// Vider le buffer de candidats ICE en attente
 async function flushPendingIce(peerId) {
   const pc  = peers[peerId]?.pc;
   const buf = pendingIce[peerId];
-  if (!pc || !pc.remoteDescription || !buf?.length) return;
+  if (!pc?.remoteDescription || !buf?.length) return;
   for (const c of buf) await pc.addIceCandidate(c).catch(() => {});
   pendingIce[peerId] = [];
 }
 
 // ─── Événements Socket ────────────────────────────────────────────────────────
 socket.on('room-users', async (users) => {
+  for (const u of users) {
+    usersMap[u.id] = { username: u.username, isHost: u.isHost, isSharing: u.isSharing };
+  }
+  usersMap[socket.id] = { username: USERNAME, isHost: false, isSharing: false };
   updateCount(users.length + 1);
+  renderUserList();
   for (const u of users) {
     await createPeer(u.id, u.username, true);
   }
 });
 
-socket.on('user-joined', ({ id, username }) => {
+socket.on('user-joined', ({ id, username, isHost }) => {
+  usersMap[id] = { username, isHost, isSharing: false };
   knownUsernames[id] = username;
-  // Le nouvel arrivant va nous envoyer une offre ; on attend.
+  renderUserList();
+  appendSystemMessage(`${username} a rejoint la room.`);
 });
 
 socket.on('user-count', updateCount);
+
+socket.on('user-left', ({ id }) => {
+  const user = usersMap[id];
+  if (user) appendSystemMessage(`${user.username} a quitté la room.`);
+  removeVideoTile(id);
+  delete usersMap[id];
+  if (peers[id]) { peers[id].pc.close(); delete peers[id]; }
+  renderUserList();
+});
+
+socket.on('new-host', ({ id }) => {
+  for (const uid in usersMap) usersMap[uid].isHost = false;
+  if (usersMap[id]) usersMap[id].isHost = true;
+  if (id === socket.id) appendSystemMessage('Tu es maintenant l\'hôte de la room.');
+  renderUserList();
+});
+
+socket.on('sharing-status', ({ id, isSharing: sharing }) => {
+  if (usersMap[id]) usersMap[id].isSharing = sharing;
+  if (!sharing && focusedPeerId === id) unfocusStream();
+  renderUserList();
+});
 
 socket.on('offer', async ({ from, username, offer }) => {
   const name = username || knownUsernames[from] || '?';
@@ -175,7 +314,6 @@ socket.on('offer', async ({ from, username, offer }) => {
 
   await pc.setRemoteDescription(offer);
 
-  // Si on partage déjà, attacher notre piste vidéo au transceiver
   if (localStream) {
     const vt = localStream.getVideoTracks()[0];
     const tr = pc.getTransceivers().find(t => t.receiver.track?.kind === 'video');
@@ -183,7 +321,6 @@ socket.on('offer', async ({ from, username, offer }) => {
   }
 
   await flushPendingIce(from);
-
   const answer = await pc.createAnswer();
   await pc.setLocalDescription(answer);
   socket.emit('answer', { to: from, answer });
@@ -198,7 +335,7 @@ socket.on('answer', async ({ from, answer }) => {
 
 socket.on('ice-candidate', async ({ from, candidate }) => {
   const peer = peers[from];
-  if (!peer || !peer.pc.remoteDescription) {
+  if (!peer?.pc.remoteDescription) {
     pendingIce[from] = pendingIce[from] || [];
     pendingIce[from].push(candidate);
     return;
@@ -206,68 +343,44 @@ socket.on('ice-candidate', async ({ from, candidate }) => {
   await peer.pc.addIceCandidate(candidate).catch(() => {});
 });
 
-socket.on('user-left', ({ id }) => {
-  removeVideoTile(id);
-  if (peers[id]) {
-    peers[id].pc.close();
-    delete peers[id];
-  }
-});
+socket.on('chat-message', appendChatMessage);
 
 // ─── Partage d'écran ──────────────────────────────────────────────────────────
 async function startShare() {
-  const preset = QUALITY[qualitySelect.value];
-
+  const preset = QUALITY[qualitySel.value];
   try {
     localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: {
-        width:     preset.width,
-        height:    preset.height,
-        frameRate: preset.frameRate,
-      },
-      audio: {
-        echoCancellation: false,
-        noiseSuppression: false,
-        sampleRate: 44100,
-      },
+      video: { width: preset.width, height: preset.height, frameRate: preset.frameRate },
+      audio: { echoCancellation: false, noiseSuppression: false, sampleRate: 44100 },
     });
   } catch (e) {
-    if (e.name !== 'NotAllowedError') console.error('getDisplayMedia:', e);
+    if (e.name !== 'NotAllowedError') console.error(e);
     return;
   }
 
   isSharing = true;
   shareBtn.textContent = 'Arrêter le partage';
   shareBtn.className   = 'btn btn-sharing';
+  socket.emit('sharing-status', { isSharing: true });
+  if (usersMap[socket.id]) usersMap[socket.id].isSharing = true;
+  renderUserList();
 
-  // Aperçu local
   addVideoTile('local', USERNAME + ' (moi)', localStream);
 
   const vt = localStream.getVideoTracks()[0];
   const at = localStream.getAudioTracks()[0];
 
-  // Renégocier avec chaque pair pour envoyer la nouvelle piste
   for (const [peerId, { pc }] of Object.entries(peers)) {
-    // Supprimer les anciens senders vidéo/audio (null ou ancienne piste)
-    for (const sender of pc.getSenders()) {
-      pc.removeTrack(sender);
-    }
-
-    // Ajouter les nouvelles pistes
+    for (const sender of pc.getSenders()) pc.removeTrack(sender);
     pc.addTrack(vt, localStream);
     if (at) pc.addTrack(at, localStream);
-
-    // Renégociation complète → déclenche ontrack côté distant avec la vraie piste
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket.emit('offer', { to: peerId, offer });
-
-    // Appliquer la limite de débit après la renégociation
     const sender = pc.getSenders().find(s => s.track?.kind === 'video');
     if (sender) applyBitrate(sender, preset.bitrate);
   }
 
-  // Détecter l'arrêt via le bouton natif du navigateur
   vt.addEventListener('ended', stopShare);
 }
 
@@ -279,13 +392,13 @@ async function stopShare() {
   isSharing = false;
   shareBtn.textContent = 'Partager mon écran';
   shareBtn.className   = 'btn btn-share';
+  socket.emit('sharing-status', { isSharing: false });
+  if (usersMap[socket.id]) usersMap[socket.id].isSharing = false;
+  renderUserList();
   removeVideoTile('local');
 
-  // Retirer les pistes et renégocier → déclenche ended côté distant
   for (const [peerId, { pc }] of Object.entries(peers)) {
-    for (const sender of pc.getSenders()) {
-      pc.removeTrack(sender);
-    }
+    for (const sender of pc.getSenders()) pc.removeTrack(sender);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket.emit('offer', { to: peerId, offer });
@@ -300,15 +413,19 @@ async function toggleShare() {
 // ─── Utilitaires ──────────────────────────────────────────────────────────────
 function applyBitrate(sender, maxBitrate) {
   const params = sender.getParameters();
-  if (!params.encodings || params.encodings.length === 0) params.encodings = [{}];
+  if (!params.encodings?.length) params.encodings = [{}];
   params.encodings[0].maxBitrate = maxBitrate;
   sender.setParameters(params).catch(() => {});
 }
 
 function updateCount(n) {
   document.getElementById('user-count').textContent =
-    n === 1 ? '1 personne connectée' : `${n} personnes connectées`;
+    n === 1 ? '1 connecté' : `${n} connectés`;
 }
 
-// ─── Connexion ────────────────────────────────────────────────────────────────
+// ─── Boot ─────────────────────────────────────────────────────────────────────
+// Ajouter l'utilisateur local dans usersMap dès le départ
+usersMap[socket.id] = { username: USERNAME, isHost: false, isSharing: false };
+renderUserList();
+
 socket.emit('join-room', { roomId: ROOM_ID, username: USERNAME });

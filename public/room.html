@@ -9,33 +9,65 @@
 <body>
   <div class="room-layout">
 
+    <!-- Header -->
     <header class="room-header">
       <div class="room-left">
-        <div class="room-code-wrap">
-          <span class="room-code-label">Room :</span>
-          <strong id="room-code-display" title="Cliquer pour copier le code"></strong>
-          <span id="copied-msg">Copié !</span>
-        </div>
-        <span id="user-count">1 personne connectée</span>
+        <span class="room-code-label">Room :</span>
+        <strong id="room-code-display" title="Cliquer pour copier"></strong>
+        <span id="copied-msg">Copié !</span>
+        <span id="user-count" class="user-count-badge">1 connecté</span>
       </div>
     </header>
 
-    <main class="video-grid" id="video-grid">
-      <div class="no-stream-msg" id="no-stream-msg">
-        Personne ne partage son écran pour l'instant.
-      </div>
-    </main>
+    <!-- Corps : vidéo + sidebar -->
+    <div class="room-body">
 
+      <!-- Zone vidéo -->
+      <main class="video-area">
+        <div class="video-grid" id="video-grid">
+          <div class="no-stream-msg" id="no-stream-msg">
+            Personne ne partage son écran pour l'instant.
+          </div>
+        </div>
+      </main>
+
+      <!-- Sidebar droite -->
+      <aside class="sidebar">
+
+        <!-- Liste des utilisateurs -->
+        <div class="sidebar-section">
+          <div class="sidebar-title">Utilisateurs</div>
+          <div id="user-list"></div>
+        </div>
+
+        <!-- Chat -->
+        <div class="chat-section">
+          <div class="sidebar-title">Chat</div>
+          <div class="chat-messages" id="chat-messages"></div>
+          <div class="chat-input-row">
+            <input
+              type="text"
+              id="chat-input"
+              placeholder="Message..."
+              maxlength="500"
+              autocomplete="off"
+            />
+            <button class="btn btn-send" id="send-btn">↑</button>
+          </div>
+        </div>
+
+      </aside>
+    </div>
+
+    <!-- Contrôles -->
     <footer class="controls">
-      <label for="quality-select" style="color:#444;font-size:0.82rem;">Qualité</label>
+      <label for="quality-select" class="quality-label">Qualité</label>
       <select id="quality-select">
         <option value="720p">720p</option>
         <option value="1080p" selected>1080p</option>
         <option value="1440p">1440p</option>
       </select>
-
       <div class="spacer"></div>
-
       <button class="btn btn-share" id="share-btn">Partager mon écran</button>
       <button class="btn btn-danger" id="leave-btn">Quitter</button>
     </footer>
