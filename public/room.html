@@ -7,78 +7,26 @@
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div class="room-layout">
+  <div class="app">
 
-    <!-- Header -->
-    <header class="room-header">
-      <div class="room-left">
-        <span class="room-code-label">Room :</span>
-        <strong id="room-code-display" title="Cliquer pour copier"></strong>
+    <header class="header">
+      <div class="header-left">
+        <span class="room-label">Room</span>
+        <strong id="room-code" title="Cliquer pour copier"></strong>
         <span id="copied-msg">Copié !</span>
-        <span id="user-count" class="user-count-badge">1 connecté</span>
       </div>
+      <div class="chips-row" id="user-chips"></div>
     </header>
 
-    <!-- Corps : vidéo + sidebar -->
-    <div class="room-body" id="room-body" data-active-tab="videos">
+    <main class="viewer">
+      <video id="main-video" autoplay playsinline></video>
+      <div class="placeholder" id="placeholder">
+        <p class="placeholder-title">Aucun écran sélectionné</p>
+        <p class="placeholder-sub">Clique sur un participant pour voir son écran</p>
+      </div>
+    </main>
 
-      <!-- Zone vidéo -->
-      <main class="video-area">
-        <div class="video-grid" id="video-grid">
-          <div class="no-stream-msg" id="no-stream-msg">
-            Personne ne partage son écran pour l'instant.
-          </div>
-        </div>
-      </main>
-
-      <!-- Sidebar droite -->
-      <aside class="sidebar">
-
-        <!-- Liste des utilisateurs -->
-        <div class="sidebar-section">
-          <div class="sidebar-title">Utilisateurs</div>
-          <div id="user-list"></div>
-        </div>
-
-        <!-- Chat -->
-        <div class="chat-section">
-          <div class="sidebar-title">Chat</div>
-          <div class="chat-messages" id="chat-messages"></div>
-          <div class="chat-input-row">
-            <input
-              type="text"
-              id="chat-input"
-              placeholder="Message..."
-              maxlength="500"
-              autocomplete="off"
-            />
-            <button class="btn btn-send" id="send-btn">↑</button>
-          </div>
-        </div>
-
-      </aside>
-    </div>
-
-    <!-- Barre de navigation mobile (cachée sur desktop) -->
-    <nav class="mobile-nav" id="mobile-nav">
-      <button class="mobile-tab active" data-panel="videos">
-        <span class="tab-icon">▶</span>
-        <span class="tab-label">Vidéos</span>
-      </button>
-      <button class="mobile-tab" data-panel="users">
-        <span class="tab-icon">●●</span>
-        <span class="tab-label">Users</span>
-      </button>
-      <button class="mobile-tab" data-panel="chat">
-        <span class="tab-icon">✉</span>
-        <span class="tab-label">Chat</span>
-        <span class="tab-badge" id="chat-badge"></span>
-      </button>
-    </nav>
-
-    <!-- Contrôles -->
     <footer class="controls">
-      <label for="quality-select" class="quality-label">Qualité</label>
       <select id="quality-select">
         <option value="720p">720p</option>
         <option value="1080p" selected>1080p</option>
@@ -86,6 +34,7 @@
       </select>
       <div class="spacer"></div>
       <button class="btn btn-share" id="share-btn">Partager mon écran</button>
+      <button class="btn btn-fs" id="fs-btn" title="Plein écran">⛶</button>
       <button class="btn btn-danger" id="leave-btn">Quitter</button>
     </footer>
 
