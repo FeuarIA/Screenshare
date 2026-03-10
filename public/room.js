@@ -6,7 +6,7 @@ const ROOM_ID  = params.get('room');
 const USERNAME = params.get('username');
 if (!ROOM_ID || !USERNAME) window.location.href = '/';
 
-// ─── Config ───────────────────────────────────────────────────────────────────
+// ─── Config WebRTC ────────────────────────────────────────────────────────────
 const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
@@ -15,34 +15,47 @@ const ICE_CONFIG = {
   ],
 };
 
-// Contrôle de qualité uniquement via le débit (pas de contraintes de résolution
-// qui peuvent bloquer le partage plein écran sur certains navigateurs)
-const BITRATES = {
-  '720p':  4_000_000,
-  '1080p': 8_000_000,
-  '1440p': 15_000_000,
+// Largeur cible par résolution (en pixels)
+const TARGET_WIDTHS = {
+  '480p':  854,
+  '720p':  1280,
+  '1080p': 1920,
+  '1440p': 2560,
+  'natif': Infinity,
+};
+
+// Présets rapides
+const PRESETS = {
+  gaming:   { resolution: '720p',  fps: 60, bitrate: 3  },
+  balanced: { resolution: '1080p', fps: 30, bitrate: 6  },
+  quality:  { resolution: '1440p', fps: 30, bitrate: 15 },
 };
 
 // ─── État ─────────────────────────────────────────────────────────────────────
 const socket = io();
-let localStream    = null;
-let isSharing      = false;
-let selectedPeerId = null;   // peer actuellement affiché dans le lecteur principal
+let localStream       = null;   // stream combiné envoyé aux pairs
+let localScreenStream = null;   // stream de capture d'écran
+let localAudioStream  = null;   // stream audio séparé (si source spécifique)
+let isSharing         = false;
+let selectedPeerId    = null;
+let fitMode           = 'fill'; // 'fill' | 'contain'
 
-// peers[id]         = { pc: RTCPeerConnection, username }
-// remoteStreams[id] = MediaStream reçu de ce peer
-// usersMap[id]      = { username, isHost, isSharing }
-const peers         = {};
-const remoteStreams = {};
-const usersMap      = {};
-const pendingIce    = {};
+// Paramètres de stream (modifiables dans le panneau)
+const settings = { resolution: '1080p', fps: 30, bitrate: 6 };
+
+const peers          = {};
+const remoteStreams  = {};
+const usersMap       = {};
+const pendingIce     = {};
 const knownUsernames = {};
 
 // ─── Éléments UI ─────────────────────────────────────────────────────────────
-const mainVideo  = document.getElementById('main-video');
-const placeholder = document.getElementById('placeholder');
-const shareBtn   = document.getElementById('share-btn');
-const qualitySel = document.getElementById('quality-select');
+const mainVideo     = document.getElementById('main-video');
+const placeholder   = document.getElementById('placeholder');
+const shareBtn      = document.getElementById('share-btn');
+const settingsPanel = document.getElementById('settings-panel');
+const fitBtn        = document.getElementById('fit-btn');
+const fitLabel      = document.getElementById('fit-label');
 
 // ─── Room code ────────────────────────────────────────────────────────────────
 document.getElementById('room-code').textContent = ROOM_ID;
@@ -53,7 +66,7 @@ document.getElementById('room-code').addEventListener('click', () => {
   setTimeout(() => (el.style.display = 'none'), 1500);
 });
 
-// ─── Boutons ──────────────────────────────────────────────────────────────────
+// ─── Boutons principaux ───────────────────────────────────────────────────────
 document.getElementById('leave-btn').addEventListener('click', () => {
   if (isSharing) stopShare();
   window.location.href = '/';
@@ -61,24 +74,80 @@ document.getElementById('leave-btn').addEventListener('click', () => {
 
 shareBtn.addEventListener('click', toggleShare);
 
-qualitySel.addEventListener('change', async () => {
-  if (isSharing) { await stopShare(); await startShare(); }
-});
-
-// Plein écran sur le lecteur principal
+// Plein écran sur le lecteur
 document.getElementById('fs-btn').addEventListener('click', () => {
-  const el = document.querySelector('.viewer');
+  const viewer = document.getElementById('viewer');
   if (document.fullscreenElement) {
     document.exitFullscreen();
   } else {
-    el.requestFullscreen().catch(() => mainVideo.requestFullscreen?.().catch(() => {}));
+    viewer.requestFullscreen().catch(() => mainVideo.requestFullscreen?.().catch(() => {}));
   }
+});
+
+// Mode fit : remplir ↔ letterbox
+fitBtn.addEventListener('click', () => {
+  fitMode = fitMode === 'fill' ? 'contain' : 'fill';
+  mainVideo.style.objectFit = fitMode;
+  fitLabel.textContent = fitMode === 'fill' ? 'Letterbox' : 'Remplir';
+});
+
+// ─── Panneau de paramètres ────────────────────────────────────────────────────
+document.getElementById('settings-btn').addEventListener('click', () => {
+  const open = settingsPanel.classList.toggle('open');
+  document.getElementById('settings-btn').classList.toggle('active', open);
+  if (open) populateAudioDevices(); // charger les périphériques à l'ouverture
+});
+
+document.getElementById('settings-close').addEventListener('click', () => {
+  settingsPanel.classList.remove('open');
+  document.getElementById('settings-btn').classList.remove('active');
+});
+
+// Résolution
+document.getElementById('s-resolution').addEventListener('change', (e) => {
+  settings.resolution = e.target.value;
+  if (isSharing) updateAllEncoders();
+});
+
+// FPS
+document.getElementById('s-fps').addEventListener('change', (e) => {
+  settings.fps = parseInt(e.target.value);
+  if (isSharing) updateAllEncoders();
+});
+
+// Débit (slider)
+const bitrateSlider  = document.getElementById('s-bitrate');
+const bitrateDisplay = document.getElementById('bitrate-display');
+bitrateSlider.addEventListener('input', () => {
+  settings.bitrate = parseInt(bitrateSlider.value);
+  bitrateDisplay.textContent = `${settings.bitrate} Mbps`;
+  if (isSharing) updateAllEncoders();
+});
+
+// Présets
+document.querySelectorAll('.preset-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    const preset = PRESETS[btn.dataset.preset];
+    settings.resolution = preset.resolution;
+    settings.fps        = preset.fps;
+    settings.bitrate    = preset.bitrate;
+
+    // Sync les inputs
+    document.getElementById('s-resolution').value = preset.resolution;
+    document.getElementById('s-fps').value         = preset.fps;
+    bitrateSlider.value                            = preset.bitrate;
+    bitrateDisplay.textContent                     = `${preset.bitrate} Mbps`;
+
+    document.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+
+    if (isSharing) updateAllEncoders();
+  });
 });
 
 // ─── Lecteur principal ────────────────────────────────────────────────────────
 function selectPeer(peerId) {
   selectedPeerId = peerId;
-
   if (peerId === 'local' && localStream) {
     mainVideo.srcObject = localStream;
     mainVideo.muted     = true;
@@ -113,19 +182,15 @@ function renderChips() {
 
   for (const [id, user] of Object.entries(usersMap)) {
     const isSelf     = id === socket.id;
-    const isSelected = id === selectedPeerId ||
-                       (isSelf && selectedPeerId === 'local');
-    const canWatch   = !isSelf && user.isSharing;
+    const isSelected = (id === selectedPeerId) || (isSelf && selectedPeerId === 'local');
 
     const chip = document.createElement('button');
     chip.className = 'chip';
-    if (isSelected)    chip.classList.add('chip-selected');
+    if (isSelected)     chip.classList.add('chip-selected');
     if (user.isSharing) chip.classList.add('chip-live');
-    if (!canWatch && !isSelf) chip.classList.add('chip-inactive');
+    if (!user.isSharing && !isSelf) chip.classList.add('chip-inactive');
 
-    chip.title = user.isHost ? 'Hôte' : 'Invité';
-
-    const dot = document.createElement('span');
+    const dot  = document.createElement('span');
     dot.className = 'chip-dot';
 
     const name = document.createElement('span');
@@ -139,18 +204,71 @@ function renderChips() {
     chip.appendChild(name);
     chip.appendChild(role);
 
-    // Clic → voir leur écran (ou dé-sélectionner)
     chip.addEventListener('click', () => {
-      if (isSelf) return; // on ne se sélectionne pas soi-même
-      if (!user.isSharing) return; // pas de stream disponible
-      if (isSelected) {
-        clearVideo();
-      } else {
-        selectPeer(id);
-      }
+      if (isSelf || !user.isSharing) return;
+      if (isSelected) clearVideo();
+      else selectPeer(id);
     });
 
     container.appendChild(chip);
+  }
+}
+
+// ─── Source audio : lister les périphériques disponibles ─────────────────────
+async function populateAudioDevices() {
+  const select = document.getElementById('s-audio');
+  const currentVal = select.value;
+
+  // Demander la permission micro pour que les labels soient visibles
+  try {
+    const tmp = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    tmp.getTracks().forEach(t => t.stop());
+  } catch (_) { /* permission refusée, on continue avec les labels génériques */ }
+
+  const devices = await navigator.mediaDevices.enumerateDevices();
+  const inputs  = devices.filter(d => d.kind === 'audioinput');
+
+  // Garder les options fixes, retirer les périphériques précédents
+  while (select.options.length > 2) select.remove(2);
+
+  inputs.forEach((dev, i) => {
+    const opt = document.createElement('option');
+    opt.value       = dev.deviceId;
+    opt.textContent = dev.label || `Microphone ${i + 1}`;
+    select.appendChild(opt);
+  });
+
+  // Restaurer la sélection si elle existe toujours
+  if ([...select.options].some(o => o.value === currentVal)) {
+    select.value = currentVal;
+  }
+}
+
+// ─── Encodeur : appliquer résolution + FPS + débit ───────────────────────────
+function computeScaleDown(sourceWidth) {
+  const target = TARGET_WIDTHS[settings.resolution];
+  if (!target || target >= sourceWidth) return 1;
+  return sourceWidth / target;
+}
+
+function applyEncoderToSender(sender) {
+  if (!sender || !localStream) return;
+  const track = localStream.getVideoTracks()[0];
+  const sourceWidth = track?.getSettings().width || 1920;
+  const scale = computeScaleDown(sourceWidth);
+
+  const params = sender.getParameters();
+  if (!params.encodings?.length) params.encodings = [{}];
+  params.encodings[0].maxBitrate    = settings.bitrate * 1_000_000;
+  params.encodings[0].maxFramerate  = settings.fps;
+  params.encodings[0].scaleResolutionDownBy = scale;
+  sender.setParameters(params).catch(() => {});
+}
+
+function updateAllEncoders() {
+  for (const { pc } of Object.values(peers)) {
+    const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+    if (sender) applyEncoderToSender(sender);
   }
 }
 
@@ -164,19 +282,15 @@ async function createPeer(peerId, peerUsername, initiator) {
 
   pc.ontrack = ({ track, streams }) => {
     if (track.kind !== 'video') return;
-
     const stream = (streams && streams[0]) || new MediaStream([track]);
     remoteStreams[peerId] = stream;
 
-    // Si ce peer est actuellement sélectionné, mettre à jour le lecteur
     if (selectedPeerId === peerId) {
       mainVideo.srcObject = stream;
       showVideo();
     }
-    // Auto-sélectionner si personne d'autre n'est sélectionné
     if (!selectedPeerId) selectPeer(peerId);
 
-    // Signaler à l'UI que ce peer partage
     if (usersMap[peerId]) usersMap[peerId].isSharing = true;
     renderChips();
 
@@ -255,10 +369,6 @@ socket.on('sharing-status', ({ id, isSharing: sharing }) => {
   renderChips();
 });
 
-socket.on('user-count', (n) => {
-  // (optionnel, non affiché dans le nouveau design)
-});
-
 socket.on('offer', async ({ from, username, offer }) => {
   const name = username || knownUsernames[from] || '?';
   const pc   = peers[from]?.pc || await createPeer(from, name, false);
@@ -293,17 +403,46 @@ socket.on('ice-candidate', async ({ from, candidate }) => {
 
 // ─── Partage d'écran ──────────────────────────────────────────────────────────
 async function startShare() {
+  const audioSource = document.getElementById('s-audio').value;
+
+  // ── 1. Capturer l'écran (vidéo, et audio système si demandé) ──
   try {
-    // Pas de contraintes de résolution forcées — le navigateur laisse le choix
-    // complet à l'utilisateur (fenêtre, onglet, écran entier)
-    localStream = await navigator.mediaDevices.getDisplayMedia({
-      video: { frameRate: { ideal: 30 } },
-      audio: true,
+    localScreenStream = await navigator.mediaDevices.getDisplayMedia({
+      video: { frameRate: { ideal: settings.fps, max: settings.fps } },
+      audio: audioSource === 'system'
+        ? { systemAudio: 'include', echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+        : false,
     });
   } catch (e) {
     if (e.name !== 'NotAllowedError') console.error(e);
     return;
   }
+
+  // ── 2. Capturer l'audio depuis un périphérique spécifique si besoin ──
+  let audioTrack = null;
+
+  if (audioSource === 'system') {
+    audioTrack = localScreenStream.getAudioTracks()[0] || null;
+  } else if (audioSource !== 'none') {
+    try {
+      localAudioStream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          deviceId:         { exact: audioSource },
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl:  false,
+        },
+      });
+      audioTrack = localAudioStream.getAudioTracks()[0] || null;
+    } catch (e) {
+      console.warn('Source audio indisponible :', e);
+    }
+  }
+
+  // ── 3. Construire le stream combiné ──
+  const vt = localScreenStream.getVideoTracks()[0];
+  const tracks = audioTrack ? [vt, audioTrack] : [vt];
+  localStream = new MediaStream(tracks);
 
   isSharing = true;
   shareBtn.textContent = 'Arrêter le partage';
@@ -311,36 +450,40 @@ async function startShare() {
   socket.emit('sharing-status', { isSharing: true });
   if (usersMap[socket.id]) usersMap[socket.id].isSharing = true;
 
-  // Afficher son propre stream dans le lecteur
+  // Aperçu local dans le lecteur
   selectedPeerId = 'local';
   mainVideo.srcObject = localStream;
   mainVideo.muted     = true;
   showVideo();
   renderChips();
 
-  const vt = localStream.getVideoTracks()[0];
-  const at = localStream.getAudioTracks()[0];
-  const bitrate = BITRATES[qualitySel.value];
-
+  // ── 4. Envoyer aux pairs ──
   for (const [peerId, { pc }] of Object.entries(peers)) {
     for (const sender of pc.getSenders()) pc.removeTrack(sender);
     pc.addTrack(vt, localStream);
-    if (at) pc.addTrack(at, localStream);
+    if (audioTrack) pc.addTrack(audioTrack, localStream);
     const offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
     socket.emit('offer', { to: peerId, offer });
     const sender = pc.getSenders().find(s => s.track?.kind === 'video');
-    if (sender) applyBitrate(sender, bitrate);
+    if (sender) applyEncoderToSender(sender);
   }
 
+  // Arrêt automatique si l'utilisateur clique "Arrêter" dans le navigateur
   vt.addEventListener('ended', stopShare);
 }
 
 async function stopShare() {
-  if (localStream) {
-    localStream.getTracks().forEach(t => t.stop());
-    localStream = null;
+  if (localScreenStream) {
+    localScreenStream.getTracks().forEach(t => t.stop());
+    localScreenStream = null;
   }
+  if (localAudioStream) {
+    localAudioStream.getTracks().forEach(t => t.stop());
+    localAudioStream = null;
+  }
+  localStream = null;
+
   isSharing = false;
   shareBtn.textContent = 'Partager mon écran';
   shareBtn.className   = 'btn btn-share';
@@ -363,14 +506,10 @@ async function toggleShare() {
   else await startShare();
 }
 
-function applyBitrate(sender, maxBitrate) {
-  const params = sender.getParameters();
-  if (!params.encodings?.length) params.encodings = [{}];
-  params.encodings[0].maxBitrate = maxBitrate;
-  sender.setParameters(params).catch(() => {});
-}
-
 // ─── Boot ─────────────────────────────────────────────────────────────────────
+// Mode fit par défaut : remplir (pas de barres noires)
+mainVideo.style.objectFit = fitMode;
+
 usersMap[socket.id] = { username: USERNAME, isHost: false, isSharing: false };
 renderChips();
 socket.emit('join-room', { roomId: ROOM_ID, username: USERNAME });
