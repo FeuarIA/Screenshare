@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StreamShare</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="room-layout">
+
+    <header class="room-header">
+      <div class="room-left">
+        <div class="room-code-wrap">
+          <span class="room-code-label">Room :</span>
+          <strong id="room-code-display" title="Cliquer pour copier le code"></strong>
+          <span id="copied-msg">Copié !</span>
+        </div>
+        <span id="user-count">1 personne connectée</span>
+      </div>
+    </header>
+
+    <main class="video-grid" id="video-grid">
+      <div class="no-stream-msg" id="no-stream-msg">
+        Personne ne partage son écran pour l'instant.
+      </div>
+    </main>
+
+    <footer class="controls">
+      <label for="quality-select" style="color:#444;font-size:0.82rem;">Qualité</label>
+      <select id="quality-select">
+        <option value="720p">720p</option>
+        <option value="1080p" selected>1080p</option>
+        <option value="1440p">1440p</option>
+      </select>
+
+      <div class="spacer"></div>
+
+      <button class="btn btn-share" id="share-btn">Partager mon écran</button>
+      <button class="btn btn-danger" id="leave-btn">Quitter</button>
+    </footer>
+
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script src="room.js"></script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>StreamShare</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="landing">
+    <h1>StreamShare</h1>
+    <p class="subtitle">Partage d'écran entre amis — gratuit, sans limite de qualité</p>
+
+    <div class="card">
+      <input type="text" id="username" placeholder="Ton prénom" maxlength="20" autocomplete="off" />
+
+      <button class="btn btn-primary" id="create-btn">Créer une room</button>
+
+      <div class="separator">ou rejoindre</div>
+
+      <div class="join-row">
+        <input
+          type="text"
+          id="room-input"
+          placeholder="Code de la room"
+          maxlength="8"
+          autocomplete="off"
+          style="text-transform: uppercase;"
+        />
+        <button class="btn btn-secondary" id="join-btn">Rejoindre</button>
+      </div>
+    </div>
+
+    <p class="error-msg" id="error-msg"></p>
+  </div>
+
+  <script>
+    const usernameEl = document.getElementById('username');
+    const roomInputEl = document.getElementById('room-input');
+    const errorEl = document.getElementById('error-msg');
+
+    function randomCode() {
+      return Math.random().toString(36).substring(2, 8).toUpperCase();
+    }
+
+    function goToRoom(roomId) {
+      const username = usernameEl.value.trim();
+      if (!username) {
+        errorEl.textContent = 'Saisis ton prénom avant de continuer.';
+        usernameEl.focus();
+        return;
+      }
+      errorEl.textContent = '';
+      window.location.href = `/room.html?room=${encodeURIComponent(roomId)}&username=${encodeURIComponent(username)}`;
+    }
+
+    document.getElementById('create-btn').addEventListener('click', () => {
+      goToRoom(randomCode());
+    });
+
+    document.getElementById('join-btn').addEventListener('click', () => {
+      const code = roomInputEl.value.trim().toUpperCase();
+      if (!code) {
+        errorEl.textContent = 'Entre le code de la room.';
+        roomInputEl.focus();
+        return;
+      }
+      goToRoom(code);
+    });
+
+    roomInputEl.addEventListener('input', () => {
+      roomInputEl.value = roomInputEl.value.toUpperCase();
+    });
+
+    // Entrée au clavier
+    usernameEl.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') document.getElementById('create-btn').click();
+    });
+    roomInputEl.addEventListener('keypress', (e) => {
+      if (e.key === 'Enter') document.getElementById('join-btn').click();
+    });
+  </script>
+</body>
+</html>
