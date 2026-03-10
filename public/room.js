@@ -110,13 +110,10 @@ async function createPeer(peerId, peerUsername, initiator) {
   pc.ontrack = ({ track, streams }) => {
     if (track.kind !== 'video') return;
     const stream = streams[0] || new MediaStream([track]);
-
-    // Afficher la tuile dès qu'il y a des données
-    const show = () => addVideoTile(peerId, peerUsername, stream);
-    const hide = () => removeVideoTile(peerId);
-    track.addEventListener('unmute', show);
-    track.addEventListener('mute',   hide);
-    if (!track.muted) show();
+    // Afficher immédiatement — on ne se fie pas à unmute (peu fiable pour getDisplayMedia)
+    addVideoTile(peerId, peerUsername, stream);
+    // Retirer la tuile quand la piste se termine
+    track.addEventListener('ended', () => removeVideoTile(peerId));
   };
 
   pc.onicecandidate = ({ candidate }) => {
@@ -249,28 +246,23 @@ async function startShare() {
   const vt = localStream.getVideoTracks()[0];
   const at = localStream.getAudioTracks()[0];
 
-  // Ajouter / remplacer la piste dans toutes les connexions existantes
+  // Renégocier avec chaque pair pour envoyer la nouvelle piste
   for (const [peerId, { pc }] of Object.entries(peers)) {
-    const transceivers = pc.getTransceivers();
-    const videoTr = transceivers.find(t => t.receiver.track?.kind === 'video');
-
-    if (videoTr) {
-      await videoTr.sender.replaceTrack(vt).catch(() => {});
-    } else {
-      // Pas de transceiver vidéo encore → en créer un et renégocier
-      pc.addTrack(vt, localStream);
-      const offer = await pc.createOffer();
-      await pc.setLocalDescription(offer);
-      socket.emit('offer', { to: peerId, offer });
+    // Supprimer les anciens senders vidéo/audio (null ou ancienne piste)
+    for (const sender of pc.getSenders()) {
+      pc.removeTrack(sender);
     }
 
-    // Audio système (si disponible)
-    if (at) {
-      const audioTr = transceivers.find(t => t.receiver.track?.kind === 'audio');
-      if (audioTr) await audioTr.sender.replaceTrack(at).catch(() => {});
-    }
+    // Ajouter les nouvelles pistes
+    pc.addTrack(vt, localStream);
+    if (at) pc.addTrack(at, localStream);
 
-    // Limiter le débit au niveau demandé
+    // Renégociation complète → déclenche ontrack côté distant avec la vraie piste
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('offer', { to: peerId, offer });
+
+    // Appliquer la limite de débit après la renégociation
     const sender = pc.getSenders().find(s => s.track?.kind === 'video');
     if (sender) applyBitrate(sender, preset.bitrate);
   }
@@ -289,11 +281,14 @@ async function stopShare() {
   shareBtn.className   = 'btn btn-share';
   removeVideoTile('local');
 
-  // Mettre la piste à null pour tous les pairs
-  for (const { pc } of Object.values(peers)) {
+  // Retirer les pistes et renégocier → déclenche ended côté distant
+  for (const [peerId, { pc }] of Object.entries(peers)) {
     for (const sender of pc.getSenders()) {
-      if (sender.track) await sender.replaceTrack(null).catch(() => {});
+      pc.removeTrack(sender);
     }
+    const offer = await pc.createOffer();
+    await pc.setLocalDescription(offer);
+    socket.emit('offer', { to: peerId, offer });
   }
 }
 
