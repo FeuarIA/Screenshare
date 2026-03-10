@@ -2,7 +2,7 @@
 <html lang="fr">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
   <title>StreamShare</title>
   <link rel="stylesheet" href="style.css" />
 </head>
@@ -20,7 +20,7 @@
     </header>
 
     <!-- Corps : vidéo + sidebar -->
-    <div class="room-body">
+    <div class="room-body" id="room-body" data-active-tab="videos">
 
       <!-- Zone vidéo -->
       <main class="video-area">
@@ -58,6 +58,23 @@
 
       </aside>
     </div>
+
+    <!-- Barre de navigation mobile (cachée sur desktop) -->
+    <nav class="mobile-nav" id="mobile-nav">
+      <button class="mobile-tab active" data-panel="videos">
+        <span class="tab-icon">▶</span>
+        <span class="tab-label">Vidéos</span>
+      </button>
+      <button class="mobile-tab" data-panel="users">
+        <span class="tab-icon">●●</span>
+        <span class="tab-label">Users</span>
+      </button>
+      <button class="mobile-tab" data-panel="chat">
+        <span class="tab-icon">✉</span>
+        <span class="tab-label">Chat</span>
+        <span class="tab-badge" id="chat-badge"></span>
+      </button>
+    </nav>
 
     <!-- Contrôles -->
     <footer class="controls">
